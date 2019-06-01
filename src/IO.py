@@ -32,7 +32,7 @@ def load_gal(path):
             else:  # If the field is just a header, add it to the header dict
                 headers[key] = val
         blocks = pd.DataFrame.from_dict(blocks, 'index',columns=["X", "Y", "Dia", "nX", "dX", "nY", "dY"])
-        blocks = pd.to_numeric(blocks)  # Load blocks into a DataFrame, and cast it all to numbers
+        blocks = blocks.apply(pd.to_numeric)  # Load blocks into a DataFrame, and cast it all to numbers
         spots = pd.read_csv(gal, sep="\t", na_values="-")  # Read the rest of the file into a DataFrame
 
         # nX and nY refer to spot indices in rows or columns, respectively
