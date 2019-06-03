@@ -52,10 +52,18 @@ def load_gpr(path):
     :param path: A string or Path object toward the GPR file
     :return: A NamedTuple with fields headers (dict) and spots (DataFrame)
     """
-    headers = None
+      # Here, we assume that any added identifier fields have already been quoted. It's too complicated otherwise.
+    headers = OrderedDict() 
     spots = None
-    # TODO Write the function to read GPR files.
-    # Here, we assume that any added identifier fields have already been quoted. It's too complicated otherwise.
+     with open(path, 'r') as gpr:
+        gpr.readline()
+        header_rows = int(re.match(r"\d+", gpr.readline()).group()) #separating optional header rows, there are 32 total
+        for _ in range(header_rows):
+            key, val = gpr.readline().strip().split('=', 2) #splitting each header between the = sign; left of = sign is key, right of = sign is val
+            headers[key]= val #added to headers ordered dictionary. each entry = (key, val)
+        spots = pd.read_csv(gpr, sep="\t", na_values="-") #reading gpr file; separate each field by a tab and make - (like in Name column) NaN
+        spots.rename(lambda x: str.title(x), axis=1, inplace=True) #making it Title case
+        spots.rename({"Id": "ID"}, axis=1, inplace=True) #not doing title case for ID because it looks werd
     return _GPR(headers, spots)
 
 
