@@ -7,7 +7,9 @@ import re
 import time
 from collections import OrderedDict, namedtuple
 
+import numpy as np
 import pandas as pd
+from PIL import Image, TiffTags
 
 _GAL = namedtuple("GAL", "headers blocks spots")
 _GPR = namedtuple("GPR", "headers spots")
@@ -52,19 +54,56 @@ def load_gpr(path):
     :param path: A string or Path object toward the GPR file
     :return: A NamedTuple with fields headers (dict) and spots (DataFrame)
     """
-      # Here, we assume that any added identifier fields have already been quoted. It's too complicated otherwise.
-    headers = OrderedDict() 
-    spots = None
-     with open(path, 'r') as gpr:
+    # Here, we assume that any added identifier fields have already been quoted. It's too complicated otherwise.
+    headers = OrderedDict()
+    with open(path, 'r') as gpr:
         gpr.readline()
-        header_rows = int(re.match(r"\d+", gpr.readline()).group()) #separating optional header rows, there are 32 total
+        header_rows = int(re.match(r"\d+", gpr.readline()).group())  # separating optional header rows
         for _ in range(header_rows):
-            key, val = gpr.readline().strip().split('=', 2) #splitting each header between the = sign; left of = sign is key, right of = sign is val
-            headers[key]= val #added to headers ordered dictionary. each entry = (key, val)
-        spots = pd.read_csv(gpr, sep="\t", na_values="-") #reading gpr file; separate each field by a tab and make - (like in Name column) NaN
-        spots.rename(lambda x: str.title(x), axis=1, inplace=True) #making it Title case
-        spots.rename({"Id": "ID"}, axis=1, inplace=True) #not doing title case for ID because it looks werd
-    return _GPR(headers, spots)
+            key, val = gpr.readline().strip().split('=',
+                                                    2)  # splitting each header between the = sign; left of = sign is key, right of = sign is val
+            headers[key] = val  # added to headers ordered dictionary. each entry = (key, val)
+        spots = pd.read_csv(gpr, sep="\t",
+                            na_values="-")  # reading gpr file; separate each field by a tab and make - (like in Name column) NaN
+        spots.rename(lambda x: str.title(x), axis=1, inplace=True)  # making it Title case
+        spots.rename({"Id": "ID"}, axis=1, inplace=True)  # not doing title case for ID because it looks weird
+        return _GPR(headers, spots)
+
+
+class Scan:
+    def __init__(self, pil_image, tags):
+        self.data = np.array(pil_image)
+        self.tags = tags
+        self.channel = tags['ImageDescription'][0:3]
+        self.resolution = 10000 / float(tags['XResolution'])
+        self.y_offset = round(float(tags['YPosition']) * 10000)
+        self.x_offset = round(float(tags['XPosition']) * 10000)
+        info = tags['HostComputer'].split(':', 2)[1].split(';')
+        self.info = dict(x.split('=') for x in info)
+
+    def crop(self, left_um, top_um, width_um, height_um):
+        top, left = self._um_to_pixel([top_um, left_um])
+        right = left + width_um / self.resolution
+        bottom = top + height_um / self.resolution
+        return self.data[left:right, top:bottom]
+
+    def _um_to_pixel(self, point):
+        y = (point[0] - self.y_offset) / self.resolution
+        x = (point[1] - self.x_offset) / self.resolution
+        return [y, x]
+
+
+def load_scan(path):
+    image = Image.open(path)
+    images = {}
+    for n in range(image.n_frames):
+        image.seek(n)
+        tags = {TiffTags.lookup(x)[1]: image.tag_v2[x] for x in image.tag_v2.keys()}
+        if re.search("\\[W[0-9]*]", tags['ImageDescription']):
+            channel = tags['ImageDescription'][0:3]
+            images[channel] = Scan(image, tags)
+    return images
+
 
 
 def write_gal(header, blocks, data, path):
