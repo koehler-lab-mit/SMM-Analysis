@@ -60,11 +60,9 @@ def load_gpr(path):
         gpr.readline()
         header_rows = int(re.match(r"\d+", gpr.readline()).group())  # separating optional header rows
         for _ in range(header_rows):
-            key, val = gpr.readline().strip().split('=',
-                                                    2)  # splitting each header between the = sign; left of = sign is key, right of = sign is val
+            key, val = gpr.readline().strip().split('=', 2)  # splitting each header between the = sign
             headers[key] = val  # added to headers ordered dictionary. each entry = (key, val)
-        spots = pd.read_csv(gpr, sep="\t",
-                            na_values="-")  # reading gpr file; separate each field by a tab and make - (like in Name column) NaN
+        spots = pd.read_csv(gpr, sep="\t", na_values="-")
         spots.rename(lambda x: str.title(x), axis=1, inplace=True)  # making it Title case
         spots.rename({"Id": "ID"}, axis=1, inplace=True)  # not doing title case for ID because it looks weird
         return _GPR(headers, spots)
