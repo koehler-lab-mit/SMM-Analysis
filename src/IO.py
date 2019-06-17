@@ -14,6 +14,7 @@ from PIL import Image, TiffTags
 _GAL = namedtuple("GAL", "headers blocks spots")
 _GPR = namedtuple("GPR", "headers spots")
 
+_ids = {x: str for x in ["NAME", "ID", "CID", "SID"]}
 
 def load_gal(path):
     """
@@ -33,9 +34,9 @@ def load_gal(path):
                 blocks[int(key[5:])] = val.split(",", 7)
             else:  # If the field is just a header, add it to the header dict
                 headers[key] = val
-        blocks = pd.DataFrame.from_dict(blocks, 'index',columns=["X", "Y", "Dia", "nX", "dX", "nY", "dY"])
+        blocks = pd.DataFrame.from_dict(blocks, 'index', columns=["X", "Y", "Dia", "nX", "dX", "nY", "dY"])
         blocks = blocks.apply(pd.to_numeric)  # Load blocks into a DataFrame, and cast it all to numbers
-        spots = pd.read_csv(gal, sep="\t", na_values="-")  # Read the rest of the file into a DataFrame
+        spots = pd.read_csv(gal, sep="\t", na_values="-", dtypes=_ids)  # Read the rest of the file into a DataFrame
 
         # nX and nY refer to spot indices in rows or columns, respectively
         # dX and dY refer to the spacings between each spot along each axis
@@ -43,8 +44,7 @@ def load_gal(path):
         spots.insert(3, 'X', spots.Block.map(blocks.X) + (spots.Column - 1) * spots.Block.map(blocks.dX))
         spots.insert(4, 'Y', spots.Block.map(blocks.Y) + (spots.Row - 1) * spots.Block.map(blocks.dY))
         spots.insert(5, 'Radius', spots.Block.map(blocks.Dia) / 2)
-        spots.rename(lambda x: str.title(x).strip('.'), axis=1, inplace=True)  # Normalize the titles to Title Case
-        spots.rename({"Id": "ID"}, axis=1, inplace=True)  # Except for ID, because that looks funny
+        spots.rename(lambda x: str.upper(x).strip('.'), axis=1, inplace=True)  # Normalize the titles
         return _GAL(headers, blocks, spots)  # Can be accessed as gal.headers, gal.blocks, or gal.spots
 
 
@@ -54,7 +54,6 @@ def load_gpr(path):
     :param path: A string or Path object toward the GPR file
     :return: A NamedTuple with fields headers (dict) and spots (DataFrame)
     """
-    # Here, we assume that any added identifier fields have already been quoted. It's too complicated otherwise.
     headers = OrderedDict()
     with open(path, 'r') as gpr:
         gpr.readline()
@@ -62,20 +61,19 @@ def load_gpr(path):
         for _ in range(header_rows):
             key, val = gpr.readline().strip().split('=', 2)  # splitting each header between the = sign
             headers[key] = val  # added to headers ordered dictionary. each entry = (key, val)
-        spots = pd.read_csv(gpr, sep="\t", na_values="-")
-        spots.rename(lambda x: str.title(x), axis=1, inplace=True)  # making it Title case
-        spots.rename({"Id": "ID"}, axis=1, inplace=True)  # not doing title case for ID because it looks weird
+        spots = pd.read_csv(gpr, sep="\t", na_values="-", dtype=_ids)
+        spots.rename(lambda x: str.upper(x), axis=1, inplace=True)  # Normalizing column names
         return _GPR(headers, spots)
 
 
 class Scan:
+
     def __init__(self, pil_image, tags):
         self.data = np.array(pil_image)
         self.tags = tags
         self.channel = tags['ImageDescription'][0:3]
         self.resolution = 10000 / float(tags['XResolution'])
-        self.y_offset = round(float(tags['YPosition']) * 10000)
-        self.x_offset = round(float(tags['XPosition']) * 10000)
+        self.offset = np.array(float(tags['YPosition']), float(tags['XPosition'])) * 10000
         info = tags['HostComputer'].split(':', 2)[1].split(';')
         self.info = dict(x.split('=') for x in info)
 
@@ -86,9 +84,7 @@ class Scan:
         return self.data[left:right, top:bottom]
 
     def _um_to_pixel(self, point):
-        y = (point[0] - self.y_offset) / self.resolution
-        x = (point[1] - self.x_offset) / self.resolution
-        return [y, x]
+        return (np.array(point) - self.offset) / self.resolution
 
 
 def load_scan(path):
