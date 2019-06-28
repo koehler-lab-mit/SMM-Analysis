@@ -16,6 +16,7 @@ _GPR = namedtuple("GPR", "headers spots")
 
 _ids = {x: str for x in ["NAME", "ID", "CID", "SID"]}
 
+
 def load_gal(path):
     """
     Reads a GAL file into a Pandas DataFrame, and additionally computes the X, Y, and Radius of each spot
@@ -27,7 +28,7 @@ def load_gal(path):
     blocks = OrderedDict()
     with open(path, 'r') as gal:
         gal.readline()
-        header_rows = int(re.match(r"\d+", gal.readline()).group()) # Indicates the number of optional header rows
+        header_rows = int(re.match(r"\d+", gal.readline()).group())  # Indicates the number of optional header rows
         for _ in range(header_rows):
             key, val = gal.readline().strip().split('=', 2)
             if re.match(r"Block\d+", key):  # If the field describes a block, add it to the blocks dict
@@ -68,23 +69,23 @@ def load_gpr(path):
 
 class Scan:
 
-    def __init__(self, pil_image, tags):
+    def __init__(self, pil_image):
         self.data = np.array(pil_image)
-        self.tags = tags
-        self.channel = tags['ImageDescription'][0:3]
-        self.resolution = 10000 / float(tags['XResolution'])
-        self.offset = np.array(float(tags['YPosition']), float(tags['XPosition'])) * 10000
-        info = tags['HostComputer'].split(':', 2)[1].split(';')
+        self.tags = {TiffTags.lookup(x)[1]: pil_image.tag_v2[x] for x in pil_image.tag_v2.keys()}
+        self.channel = self.tags['ImageDescription'][0:3]
+        self.resolution = 10000 / float(self.tags['XResolution'])
+        self.offset = np.array([float(self.tags['YPosition']),
+                                float(self.tags['XPosition'])]) * 10000
+        info = self.tags['HostComputer'].split(':', 2)[1].split(';')
         self.info = dict(x.split('=') for x in info)
 
-    def crop(self, left_um, top_um, width_um, height_um):
-        top, left = self._um_to_pixel([top_um, left_um])
-        right = left + width_um / self.resolution
-        bottom = top + height_um / self.resolution
-        return self.data[left:right, top:bottom]
-
-    def _um_to_pixel(self, point):
-        return (np.array(point) - self.offset) / self.resolution
+    def __getitem__(self, yx_slice):
+        y_slice, x_slice = yx_slice
+        y0 = int((y_slice.start - self.offset[0]) / self.resolution)
+        y1 = int((y_slice.stop - self.offset[0]) / self.resolution)
+        x0 = int((x_slice.start - self.offset[1]) / self.resolution)
+        x1 = int((x_slice.stop - self.offset[1]) / self.resolution)
+        return self.data[y0:y1, x0:x1]
 
 
 def load_scan(path):
@@ -92,12 +93,10 @@ def load_scan(path):
     images = {}
     for n in range(image.n_frames):
         image.seek(n)
-        tags = {TiffTags.lookup(x)[1]: image.tag_v2[x] for x in image.tag_v2.keys()}
-        if re.search("\\[W[0-9]*]", tags['ImageDescription']):
-            channel = tags['ImageDescription'][0:3]
-            images[channel] = Scan(image, tags)
+        if re.search('\\[W[0-9]*]', image.tag_v2[270]):
+            scan = Scan(image)
+            images[scan.channel] = scan
     return images
-
 
 
 def write_gal(header, blocks, data, path):
@@ -108,19 +107,19 @@ def write_gal(header, blocks, data, path):
         pass
     columns = len(data.columns)
 
-    def _format(string, n=columns-1, quote=True):
+    def _format(string, n=columns - 1, quote=True):
         if quote:
-            return '"%s"%s\n' % (string, "\t"*n)
+            return '"%s"%s\n' % (string, "\t" * n)
         else:
-            return '%s%s\n' % (string, "\t"*n)
+            return '%s%s\n' % (string, "\t" * n)
 
     optional_rows = len(header) + len(blocks) + 2
     with open(path, mode='w') as file:
-        file.write(_format("ATF\t1", n=columns-2, quote=False))
-        file.write(_format("%s\t%s" % (optional_rows, columns), n=columns-2, quote=False))
+        file.write(_format("ATF\t1", n=columns - 2, quote=False))
+        file.write(_format("%s\t%s" % (optional_rows, columns), n=columns - 2, quote=False))
         file.write(_format("Type=GenePix ArrayList V1.0"))
         file.writelines(_format("%s=%s" % (k, v)) for k, v in header.items())
         file.write(_format(time.strftime("FileCreated=%x %X")))
         for line in blocks.astype(str).itertuples():
-            file.write('"Block%s=%s"%s\n' % (line.Index, ','.join(line[1:]), "\t"*(columns-1)))
+            file.write('"Block%s=%s"%s\n' % (line.Index, ','.join(line[1:]), "\t" * (columns - 1)))
         data.to_csv(file, index=False, sep="\t", na_rep="-")
