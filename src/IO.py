@@ -70,22 +70,31 @@ def load_gpr(path):
 class Scan:
 
     def __init__(self, pil_image):
-        self.data = np.array(pil_image)
+        self.data = np.asarray(pil_image)
         self.tags = {TiffTags.lookup(x)[1]: pil_image.tag_v2[x] for x in pil_image.tag_v2.keys()}
-        self.channel = self.tags['ImageDescription'][0:3]
+        try:
+            self.channel = re.match(r'\S+', self.tags['ImageDescription']).group()
+        except AttributeError:
+            self.channel = None
+        try:
+            self.channel_label = re.search(r'\[.+\]', self.tags['ImageDescription']).group().strip('[]')
+        except AttributeError:
+            self.channel_label = None
+        try:
+            self.info = dict(map(lambda x: x.split('='), re.findall(r"\w+=[^;]*", self.tags['HostComputer'])))
+        except AttributeError:
+            self.info = None
         self.resolution = 10000 / float(self.tags['XResolution'])
         self.offset = np.array([float(self.tags['YPosition']),
                                 float(self.tags['XPosition'])]) * 10000
-        info = self.tags['HostComputer'].split(':', 2)[1].split(';')
-        self.info = dict(x.split('=') for x in info)
 
-    def __getitem__(self, yx_slice):
-        y_slice, x_slice = yx_slice
-        y0 = int((y_slice.start - self.offset[0]) / self.resolution)
-        y1 = int((y_slice.stop - self.offset[0]) / self.resolution)
-        x0 = int((x_slice.start - self.offset[1]) / self.resolution)
-        x1 = int((x_slice.stop - self.offset[1]) / self.resolution)
-        return self.data[y0:y1, x0:x1]
+    @property
+    def y_offset(self):
+        return self.offset[0]
+
+    @property
+    def x_offset(self):
+        return self.offset[1]
 
 
 def load_scan(path):
