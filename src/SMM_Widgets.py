@@ -113,18 +113,13 @@ class SpotDisplay(widgets.Image):
 
     def connect_qgrid(self, qgrid_df, lookup_func=None):
         def callback(event, widget):
-            logger.error("Attempting update")
-            try:
-                df = widget.get_changed_df().iloc[event['new']]
-                if lookup_func:
-                    df = lookup_func(df)
-                image = self.show_spots_from_frame(df)
-                b = io.BytesIO()
-                image.save(b, 'PNG')
-                self.value = b.getvalue()
-            except Exception as e:
-                logger.error(e, exc_info=True)
-
+            df = widget.get_changed_df().iloc[event['new']]
+            if lookup_func:
+                df = lookup_func(df)
+            image = self.show_spots_from_frame(df)
+            b = io.BytesIO()
+            image.save(b, 'PNG')
+            self.value = b.getvalue()
         qgrid_df.on('selection_changed', callback)
 
 
