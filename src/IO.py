@@ -85,16 +85,9 @@ class Scan:
         except AttributeError:
             self.info = None
         self.resolution = 10000 / float(self.tags['XResolution'])
-        self.offset = np.array([float(self.tags['YPosition']),
-                                float(self.tags['XPosition'])]) * 10000
-
-    @property
-    def y_offset(self):
-        return self.offset[0]
-
-    @property
-    def x_offset(self):
-        return self.offset[1]
+        self.y_offset = float(self.tags['YPosition']) * 10000
+        self.x_offset = float(self.tags['XPosition']) * 10000
+        self.offset = np.array([self.y_offset, self.x_offset])
 
 
 def load_scan(path):
