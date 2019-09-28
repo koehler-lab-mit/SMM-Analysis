@@ -1,184 +1,169 @@
-import io
-import logging
-from itertools import accumulate, repeat, cycle, count
+from base64 import b64encode
+from functools import wraps
+from io import BytesIO
+from operator import itemgetter
 
 import ipywidgets as widgets
 import numpy as np
+import pandas as pd
 import qgrid
-from IPython.display import display, SVG
-from PIL import Image, ImageOps, ImageFont, ImageDraw
-from rdkit import Chem
-from rdkit.Chem.Draw import rdMolDraw2D
-from skimage.exposure import rescale_intensity
+from IPython.display import display
+from PIL import Image, ImageOps
+from rdkit import Chem, rdBase
+from rdkit.Chem import rdDepictor
+from rdkit.Chem.Draw import IPythonConsole
 
-logger = logging.getLogger(__name__)
+IPythonConsole.ipython_useSVG = True
+rdDepictor.SetPreferCoordGen(True)
+IPythonConsole.molSize = (175, 175)
+rdBase.DisableLog('rdApp.*')
+
+pd.set_option('display.max_colwidth', -1)
+
+colors = {'635': [255, 0, 0],
+          '594': [255, 128, 0],
+          '532': [0, 255, 0],
+          '488': [0, 75, 255]}
 
 
-def label_image(image, label, side='top', spacing=0,
-                font=ImageFont.truetype("/Users/rob/PycharmProjects/SMM-Analysis/src/RobotoCondensed-Regular.ttf", 16)):
-    width, height = image.size
-    text_img = Image.new('RGB', font.getsize(label), (255, 255, 255, 0))
-    ImageDraw.Draw(text_img).text((0, 0), label, font=font, fill=(0, 0, 0))
-    if side == 'top' or side == 'bottom':
-        text_width, text_height = text_img.size
-        labeled_image = Image.new('RGB', (width, height + text_height + spacing), (255, 255, 255, 0))
-        xtext = max(int((width - text_width) / 2), 0)
-        xim = 0
-        if side == 'top':
-            ytext = 0
-            yim = text_height + spacing
-        else:
-            yim = 0
-            ytext = height + spacing
-    elif side == 'left' or side == 'right':
-        text_img = text_img.rotate(-90)
-        text_width, text_height = text_img.size
-        labeled_image = Image.new('RGB', (width + text_width + spacing, height), (255, 255, 255, 0))
-        ytext = max(int((height - text_height) / 2), 0)
-        yim = 0
-        if side == 'left':
-            xtext = 0
-            xim = text_width + spacing
-        else:
-            xim = 0
-            xtext = width + spacing
+def set_structure_size(width, height):
+    IPythonConsole.molSize = (width, height)
+
+
+def _join_images(images, spacing=5):
+    images = [i for i in images if isinstance(i, Image.Image)]
+    if len(images) == 0:
+        image = Image.new('RGB', (1, 1), (255, 255, 255, 0))
+    elif len(images) == 1:
+        image = list(images)[0]
     else:
-        raise ValueError("'side' must be one of (top, bottom, left, right), not %s" % side)
-    labeled_image.paste(text_img, (xtext, ytext))
-    labeled_image.paste(image, (xim, yim))
-    return labeled_image
+        widths = [i.width for i in images]
+        heights = [i.height for i in images]
+        size = (sum(widths) + spacing * (len(images) - 1), max(heights))
+        image = Image.new('RGB', size, (255, 255, 255, 0))
+        x = 0
+        for im in images:
+            image.paste(im, (x, 0))
+            x += im.width + spacing
+    return image
 
 
-def combine_images(images, layout='horizontal', spacing=10):
-    n_images = len(images)
-    widths = [i.width for i in images]
-    heights = [i.height for i in images]
-    if layout == 'horizontal':
-        width = sum(widths) + spacing * (n_images - 1)
-        height = max(heights)
-        x = [0] + [w + spacing * (i + 1) for i, w in enumerate(accumulate(widths))]
-        y = repeat(0, n_images)
-    elif layout == 'vertical':
-        width = max(widths)
-        height = sum(heights) + spacing * (n_images - 1)
-        x = repeat(0, n_images)
-        y = [0] + [h + spacing * (i + 1) for i, h in enumerate(accumulate(heights))]
-    else:
-        raise ValueError("Direction must be horizontal or vertical, not %s" % layout)
-    img = Image.new('RGB', (width, height), (255, 255, 255, 0))
-    for image, ix, iy in zip(images, x, y):
-        img.paste(image, (ix, iy))
-    return img
+def _pil_to_html(image):
+    buffered = BytesIO()
+    image.save(buffered, format="PNG")
+    buffered = b64encode(buffered.getvalue()).decode()
+    return f'<img src="data:image/png;base64,{buffered}">'
 
 
-class SpotDisplay(widgets.Image):
-    def __init__(self, channel, zoom=2, size=(150, 150), group_by='BARCODE', auto_contrast=True):
-        self.channel = channel
-        self.zoom = zoom
+class _ImageFactory:
+    def __init__(self, df_row, size, contrast):
+        self.df_row = df_row[['y0', 'y1', 'x0', 'x1', 'SCAN']].copy()
         self.size = size
-        self.group_by = [group_by] if isinstance(group_by, str) else group_by
-        self.auto_contrast = auto_contrast
-        super().__init__(type='png')
+        self.contrast = contrast
 
-    def get_spot_image(self, scan, x, y, dia):
-        scan = scan[self.channel]
-        dia *= self.zoom
-        x = int((x - scan.x_offset - dia / 2) / scan.resolution)
-        y = int((y - scan.y_offset - dia / 2) / scan.resolution)
-        dia = int(dia / scan.resolution)
-        if self.auto_contrast:
-            image = rescale_intensity(np.sqrt(scan.data[y:y + dia, x:x + dia]), out_range=np.uint8).astype(np.uint8)
-        else:
-            image = np.sqrt(scan.data[y:y + dia, x:x + dia]).astype(np.uint8)
-        image = Image.fromarray(image).convert(mode='L').resize(self.size)
-        if scan.channel:
-            image = ImageOps.colorize(image, [0, 0, 0], colors[scan.channel])
-        return image
+    def __getitem__(self, channel):
+        row = self.df_row
+        if channel not in row.SCAN:
+            return Image.new('RGB', (1, 1), (255, 255, 255, 0))
+        scan = row.SCAN[channel]
 
-    def show_spots_from_frame(self, df):
-        df = df.copy()
-        group_by = self.group_by.copy()
-        df["IMAGE"] = df.apply(lambda x: self.get_spot_image(x.SCAN, x.X, x.Y, x.DIA), axis=1)
-        logger.error(group_by)
-        images = df.set_index(group_by)["IMAGE"]
-        image_layouts = cycle(['horizontal', 'vertical'])
-        label_directions = cycle(['left', 'up', 'right', 'down'])
-        spacing_size = (int(i / 2) * 5 for i in count(2))
-        for layout, label_direction, spacing in zip(image_layouts, label_directions, spacing_size):
-            if group_by:
-                images = images.groupby(group_by).apply(lambda x: combine_images(x, layout, spacing))
-                group_by.pop()
-            else:
-                return combine_images(images, layout, spacing)
+        # Crop Scan
+        y0 = int((row.y0 - scan.y_offset) / scan.resolution)
+        y1 = int((row.y1 - scan.y_offset) / scan.resolution)
+        x0 = int((row.x0 - scan.x_offset) / scan.resolution)
+        x1 = int((row.x1 - scan.x_offset) / scan.resolution)
+        image = scan.data[y0:y1, x0:x1]
 
-    def connect_qgrid(self, qgrid_df, lookup_func=None):
-        def callback(event, widget):
-            df = widget.get_changed_df().iloc[event['new']]
-            if lookup_func:
-                df = lookup_func(df)
-            image = self.show_spots_from_frame(df)
-            b = io.BytesIO()
-            image.save(b, 'PNG')
-            self.value = b.getvalue()
-        qgrid_df.on('selection_changed', callback)
+        # Downscale to uint8
+        image = np.sqrt(image)
+        if self.contrast:
+            low, high = np.percentile(image, self.contrast)
+            np.clip(image, low, high, out=image)
+            image = (image - low) * 255 / float(high - low)
+        image = image.astype(np.uint8)
+
+        # Make into PIL Image
+        image = (Image.fromarray(image).convert(mode='L').resize(self.size))
+        return ImageOps.colorize(image, [0, 0, 0], colors[scan.channel])
 
 
 class TableDisplay(widgets.Output):
+
     def __init__(self, data):
-        self.data = data
-        self.height = 150
-        self.width = 150
         super().__init__()
-        self.struct = widgets.Output(layout=widgets.Layout(width='20%'))
-        self.qgrid_widget = qgrid.show_grid(
-            self.data,
+        self.table = qgrid.show_grid(
+            data,
             show_toolbar=False,
             grid_options=qgrid_default_grid_options,
             column_options=qgrid_default_column_options)
-        self.qgrid_widget.on('selection_changed', self.update_struct)
-        grid_out = widgets.Output(layout=widgets.Layout(width='80%'))
-        with grid_out:
-            display(self.qgrid_widget)
-        with self:
-            display(widgets.HBox((grid_out, self.struct)))
+        if 'SMILES' in data:
+            self.struct = widgets.Output(layout=widgets.Layout(width='20%'))
+            self.table.on('selection_changed', self.update_struct)
+            grid_out = widgets.Output(layout=widgets.Layout(width='80%'))
+            with grid_out:
+                display(self.table)
+            with self:
+                display(widgets.HBox((grid_out, self.struct)))
+        else:
+            with self:
+                display(self.table)
 
-    def on(self, event, handler):
-        self.qgrid_widget.on(event, handler)
+    def show_spots(self, channels=None, rows=None, cols=None,
+                   zoom=2, size=150, contrast=(20, 98), lookup_func=None):
+        table = widgets.HTML()
+        channels = [channels] if isinstance(channels, str) else channels
+        rows = [rows] if isinstance(rows, str) else rows
+        cols = [cols] if isinstance(cols, str) else cols
+        if rows is None and cols is None:
+            cols = ['ID']
 
-    def update_struct(self, event, widg):
-        smiles = str(widg.get_changed_df().iloc[event['new'][0]].SMILES)
-        mol = Chem.MolFromSmiles(smiles)
-        drawer = rdMolDraw2D.MolDraw2DSVG(175, 175)
-        if mol:
-            mol = rdMolDraw2D.PrepareMolForDrawing(mol)
-            drawer.DrawMolecule(mol)
-        drawer.FinishDrawing()
+        def callback(_, widget):
+            df = widget.get_selected_df()
+            if lookup_func:
+                df = lookup_func(df)
+            r = df.DIA * zoom / 2
+            df = df.assign(y0=df.Y - r, y1=df.Y + r, x0=df.X - r, x1=df.X + r)
+            ims = df.apply(_ImageFactory, axis=1, args=((size, size), contrast))
+            if channels is None:
+                sub_channels = set().union(*(x.keys() for x in df.SCAN))
+            else:
+                sub_channels = channels
+            dfs = {}
+            for channel in sub_channels:
+                dfs[channel] = df.assign(IMAGE=ims.apply(itemgetter(channel)))
+            df = pd.concat(dfs, names=["CHANNEL", "CI"]).reset_index()
+            table.value = (df
+                           .pivot_table('IMAGE', rows, cols, _join_images)
+                           .applymap(_pil_to_html)
+                           .to_html(escape=False, index_names=False))
+
+        self.table.on('selection_changed', callback)
+        return table
+
+    @wraps(pd.DataFrame.to_csv)
+    def to_csv(self, *args, **kwargs):
+        return self.table.get_changed_df().to_csv(*args, **kwargs)
+
+    def update_struct(self, _, df):
+        mol = Chem.MolFromSmiles(str(df.get_selected_df().SMILES.iloc[0]))
         self.struct.clear_output()
-        with self.struct:
-            display(SVG(drawer.GetDrawingText().replace("svg:", "")))
+        if mol:
+            with self.struct:
+                display(mol)
 
-colors = {'635': [255, 0, 0], '594': [255, 128, 0], '532': [0, 255, 0], '488': [0, 75, 255]}
 
 qgrid_default_grid_options = {
     # SlickGrid options
-    'fullWidthRows': True,
-    'syncColumnCellResize': True,
-    'forceFitColumns': False,
-    'defaultColumnWidth': 80,
-    'rowHeight': 28,
-    'enableColumnReorder': True,
-    'enableTextSelectionOnCells': True,
-    'editable': True,
-    'autoEdit': False,
-    'explicitInitialization': True,
+    'forceFitColumns': False,  ##
+    'defaultColumnWidth': 80,  ##
+    'enableColumnReorder': True,  ##
+    'autoEdit': False,  # ??
 
     # Qgrid options
-    'maxVisibleRows': 6,
-    'minVisibleRows': 1,
-    'sortable': True,
-    'filterable': True,
-    'highlightSelectedCell': True,
-    'highlightSelectedRow': True
+    'maxVisibleRows': 6,  ##
+    'minVisibleRows': 1,  ##
+    'filterable': False,  ##
+    'highlightSelectedCell': True,  ##
 }
 
 qgrid_default_column_options = {
@@ -194,3 +179,4 @@ qgrid_default_column_options = {
     # Qgrid column options
     'editable': True
 }
+

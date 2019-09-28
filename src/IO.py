@@ -1,5 +1,5 @@
 """
-This module contains files for input and output of files following GenePix-compliant file formats.
+This module contains functions for input and output of files following GenePix-compliant file formats.
 File definitions can be found here: http://mdc.custhelp.com/app/answers/detail/a_id/18883/kw/18883
 """
 
