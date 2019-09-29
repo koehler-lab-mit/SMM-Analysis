@@ -3,20 +3,13 @@ from functools import wraps
 from io import BytesIO
 from operator import itemgetter
 
-import ipywidgets as widgets
 import numpy as np
 import pandas as pd
 import qgrid
-from IPython.display import display
 from PIL import Image, ImageOps
-from rdkit import Chem, rdBase
-from rdkit.Chem import rdDepictor
-from rdkit.Chem.Draw import IPythonConsole
-
-IPythonConsole.ipython_useSVG = True
-rdDepictor.SetPreferCoordGen(True)
-IPythonConsole.molSize = (175, 175)
-rdBase.DisableLog('rdApp.*')
+from ipywidgets import HTML
+from rdkit import Chem
+from rdkit.Chem.Draw import rdMolDraw2D
 
 pd.set_option('display.max_colwidth', -1)
 
@@ -24,10 +17,6 @@ colors = {'635': [255, 0, 0],
           '594': [255, 128, 0],
           '532': [0, 255, 0],
           '488': [0, 75, 255]}
-
-
-def set_structure_size(width, height):
-    IPythonConsole.molSize = (width, height)
 
 
 def _join_images(images, spacing=5):
@@ -87,43 +76,27 @@ class _ImageFactory:
         return ImageOps.colorize(image, [0, 0, 0], colors[scan.channel])
 
 
-class TableDisplay(widgets.Output):
-
+class TableDisplay:
     def __init__(self, data):
-        super().__init__()
-        self.table = qgrid.show_grid(
-            data,
-            show_toolbar=False,
-            grid_options=qgrid_default_grid_options,
-            column_options=qgrid_default_column_options)
-        if 'SMILES' in data:
-            self.struct = widgets.Output(layout=widgets.Layout(width='20%'))
-            self.table.on('selection_changed', self.update_struct)
-            grid_out = widgets.Output(layout=widgets.Layout(width='80%'))
-            with grid_out:
-                display(self.table)
-            with self:
-                display(widgets.HBox((grid_out, self.struct)))
-        else:
-            with self:
-                display(self.table)
+        self.data = qgrid.show_grid(
+            data, show_toolbar=False,
+            grid_options=qgrid_options,
+            column_options=qgrid_col_options)
 
-    def show_spots(self, channels=None, rows=None, cols=None,
-                   zoom=2, size=150, contrast=(20, 98), lookup_func=None):
-        table = widgets.HTML()
-        channels = [channels] if isinstance(channels, str) else channels
-        rows = [rows] if isinstance(rows, str) else rows
-        cols = [cols] if isinstance(cols, str) else cols
-        if rows is None and cols is None:
-            cols = ['ID']
+    def spots(self, lookup=None,
+              channels=None, zoom=2, size=(150, 150), contrast=(20, 98),
+              rows='ID', cols='CHANNEL'):
+        spots = HTML()
 
-        def callback(_, widget):
-            df = widget.get_selected_df()
-            if lookup_func:
-                df = lookup_func(df)
+        def callback(_, df):
+            df = df.get_selected_df()
+            if lookup:
+                df = lookup(df)
+            if not pd.Series(['X', 'Y', 'DIA', 'SCAN']).isin(df.columns).all():
+                raise ValueError("DataFrame does not have spot-wise  information")
             r = df.DIA * zoom / 2
             df = df.assign(y0=df.Y - r, y1=df.Y + r, x0=df.X - r, x1=df.X + r)
-            ims = df.apply(_ImageFactory, axis=1, args=((size, size), contrast))
+            ims = df.apply(_ImageFactory, axis=1, args=(size, contrast))
             if channels is None:
                 sub_channels = set().union(*(x.keys() for x in df.SCAN))
             else:
@@ -132,27 +105,36 @@ class TableDisplay(widgets.Output):
             for channel in sub_channels:
                 dfs[channel] = df.assign(IMAGE=ims.apply(itemgetter(channel)))
             df = pd.concat(dfs, names=["CHANNEL", "CI"]).reset_index()
-            table.value = (df
+            spots.value = (df
                            .pivot_table('IMAGE', rows, cols, _join_images)
                            .applymap(_pil_to_html)
                            .to_html(escape=False, index_names=False))
 
-        self.table.on('selection_changed', callback)
-        return table
+        self.data.on('selection_changed', callback)
+        return spots
+
+    def structure(self, size=(175, 175), parse=Chem.MolFromSmiles, name='SMILES'):
+        structure = HTML()
+
+        def callback(_, df):
+            df = df.get_selected_df()
+            structure.value = ''
+            mol = parse(str(df.iloc[0, df.columns.get_loc(name)]))
+            if mol:
+                drawer = rdMolDraw2D.MolDraw2DSVG(*size)
+                rdMolDraw2D.PrepareAndDrawMolecule(drawer, mol)
+                drawer.FinishDrawing()
+                structure.value = drawer.GetDrawingText()
+
+        self.data.on('selection_changed', callback)
+        return structure
 
     @wraps(pd.DataFrame.to_csv)
     def to_csv(self, *args, **kwargs):
-        return self.table.get_changed_df().to_csv(*args, **kwargs)
-
-    def update_struct(self, _, df):
-        mol = Chem.MolFromSmiles(str(df.get_selected_df().SMILES.iloc[0]))
-        self.struct.clear_output()
-        if mol:
-            with self.struct:
-                display(mol)
+        return self.data.get_changed_df().to_csv(*args, **kwargs)
 
 
-qgrid_default_grid_options = {
+qgrid_options = {
     # SlickGrid options
     'forceFitColumns': False,  ##
     'defaultColumnWidth': 80,  ##
@@ -166,7 +148,7 @@ qgrid_default_grid_options = {
     'highlightSelectedCell': True,  ##
 }
 
-qgrid_default_column_options = {
+qgrid_col_options = {
     # SlickGrid column options
     'defaultSortAsc': True,
     'maxWidth': None,
