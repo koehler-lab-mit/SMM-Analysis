@@ -116,32 +116,20 @@ class TableDisplay(qgrid.QGridWidget):
         x.__class__ = cls
         return x
 
-    def __init__(self, data):
-        self.qgrid = qgrid.show_grid(
-            data, show_toolbar=False,
-            grid_options=qgrid_options,
-            column_options=qgrid_col_options)
-
     def structure(self, size=(175, 175)):
         structure = ChemicalSVG(size)
 
         def callback(_, df):
             df = df.get_selected_df()
-            if 'SMILES' not in df.columns:
+            if len(df.SMILES.unique())!=1:
                 structure.clear_molecule()
-                return
-            if len(df.SMILES.unique()) > 1:
-                structure.clear_molecule()
-                return
-            try:
-                smiles = df.iloc[0, df.columns.get_loc('SMILES')]
-                mol = Chem.MolFromSmiles(smiles)
-                if mol:
+            else:
+                try:
+                    smiles = df['SMILES'].pop(0)
+                    mol = Chem.MolFromSmiles(smiles)
                     structure.show_molecule(mol)
-                else:
+                except (TypeError, KeyError):
                     structure.clear_molecule()
-            except TypeError:
-                structure.clear_molecule()
 
         self.qgrid.on('selection_changed', callback)
         return structure
